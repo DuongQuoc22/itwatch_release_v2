@@ -1,0 +1,288 @@
+package com.watch.controller;
+
+import com.watch.config.Utility;
+import com.watch.dao.AccountDao;
+import com.watch.dto.UserDto;
+import com.watch.entity.Accounts;
+import com.watch.entity.UserAcounts;
+import com.watch.service.AccountService;
+import com.watch.service.RolesService;
+import com.watch.service.impl.CustomerNotFoundException;
+import net.bytebuddy.utility.RandomString;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.propertyeditors.StringTrimmerEditor;
+import org.springframework.data.repository.query.Param;
+import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.mail.javamail.JavaMailSenderImpl;
+import org.springframework.mail.javamail.MimeMessageHelper;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.oauth2.client.authentication.OAuth2AuthenticationToken;
+import org.springframework.stereotype.Controller;
+import org.springframework.ui.Model;
+import org.springframework.validation.BindingResult;
+import org.springframework.validation.FieldError;
+import org.springframework.web.bind.WebDataBinder;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.mvc.support.RedirectAttributes;
+
+import javax.mail.MessagingException;
+import javax.mail.internet.MimeMessage;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpSession;
+import javax.validation.Valid;
+import java.io.UnsupportedEncodingException;
+import java.security.Principal;
+
+@Controller
+public class SecurityController {
+	private static final Logger log = LoggerFactory.getLogger(AccountController.class);
+
+	@InitBinder
+	public void intbinder(WebDataBinder dataBinder) {
+		StringTrimmerEditor stringTrimmerEditor = new StringTrimmerEditor(true);
+		dataBinder.registerCustomEditor(String.class, stringTrimmerEditor);
+	}
+
+	@Autowired
+	AccountService accountService;
+
+	@Autowired
+	RolesService rolesService;
+	@Autowired
+	JavaMailSender mailSender;
+	@Autowired
+	JavaMailSenderImpl mailSendeImpl;
+	@Autowired
+    UserAcounts useAcc;
+
+	@Autowired
+	AccountDao accountDao;
+	
+	@Autowired 
+    HttpSession session;
+
+	// Đăng Nhập
+	@RequestMapping("/auth/login/form")
+	public String loginForm() {
+		return "/user/login/dangNhap";
+	}
+
+	@RequestMapping("/auth/login/success")
+	public String loginSuccess(Model model,HttpServletRequest request) {
+		
+		String nameAcount = (String) session.getAttribute("nameAcount");
+		Accounts acount = useAcc.User();
+		if(acount!=null) {
+			if(acount.isStatus() == true) {
+				return"redirect:/itwatch";
+			}else {
+				return"redirect:/login";
+			}
+		}
+		model.addAttribute("nameAcount",nameAcount);
+		model.addAttribute("message", "Đăng nhập thành công");
+		return "redirect:/itwatch";
+		 //return "/user/login/test";
+	}
+
+	@RequestMapping("/auth/login/unauthoried")
+	public String unauthoried(Model model) {
+		model.addAttribute("message", "Không có quyền truy xuất!");
+		return "/user/login/dangNhap";
+	}
+
+	@RequestMapping("/auth/login/error")
+	public String loginError(Model model) {
+		model.addAttribute("message", "Sai thông tin đăng nhập!");
+		return "/user/login/dangNhap";
+	}
+
+	// đăng nhập fb gg
+	@RequestMapping("/oauth2/login/success")
+	public String Success(OAuth2AuthenticationToken oauth2) {
+		accountService.loginFormOAuth2(oauth2);
+		return "forward:/auth/login/success";
+	}
+
+	// Đăng Ký
+	@GetMapping("/register")
+	public String register(UserDto userDto, Model model) {
+		model.addAttribute("userDTO", userDto);
+		return "/user/login/dangKyTK";
+	}
+
+	@PostMapping("/register")
+	public String save(@Valid @ModelAttribute("userDTO") UserDto userDto, BindingResult bindingResult,
+			RedirectAttributes ra, HttpServletRequest request, Model model) {
+		if (accountService.existsByUsername(userDto.getUsername())) {
+			bindingResult.addError(new FieldError("userDTO", "username", "Username trùng với Username đã đăng ký!!!"));
+		}
+		if (accountService.existsByEmail(userDto.getEmail())) {
+			bindingResult.addError(new FieldError("userDTO", "email", "Email trùng với Email đã đăng ký!!!"));
+		}
+		if (userDto.getPassword() != null && userDto.getRpassword() != null) {
+			if (!userDto.getPassword().equals(userDto.getRpassword())) {
+				bindingResult.addError(new FieldError("userDTO", "rpassword", "Password mới không trùng khớp"));
+			}
+		}
+
+		if (bindingResult.hasErrors()) {
+			return "user/login/dangKyTK";
+		}
+//        log.info(">>UseDto : {}", userDto.toString());
+		ra.addFlashAttribute("message", "Đăng ký thành công");
+		//gửi mail đăng ký
+
+		String email = request.getParameter("email");
+		System.out.println("Email :" + email);
+		try {
+			sendEmailRegister(email);
+		} catch (UnsupportedEncodingException | MessagingException e) {
+			// TODO: handle exception
+			model.addAttribute("error", "Lỗi khi gửi email");
+		}
+		accountService.register(userDto);
+
+		return "redirect:/auth/login/form";
+	}
+
+	public void sendEmailRegister(String recipientEmail) throws MessagingException, UnsupportedEncodingException {
+		MimeMessage message = mailSender.createMimeMessage();
+		MimeMessageHelper helper = new MimeMessageHelper(message,"UTF-8");
+
+		helper.setFrom("quocdvph14459@fpt.edu.vn", "itwatch Register");
+		helper.setTo(recipientEmail);
+
+		String subject = "Đây là mail xác nhận đăng ký tài khoản của bạn đã thành công";
+
+		String content = "<p>Hello Mr,</p>" + "<p>Bạn đã đăng ký thành công tài khoản của mình.</p>"
+				+ "<p>Cảm ơn bạn đã tin tưởng Shop itwatch, "
+				+ "hãy đăng nhập và đặt mua chiếc đồng hồ mà bạn thích ngay nào!!!</p>";
+
+		helper.setSubject(subject);
+
+		helper.setText(content, true);
+
+		mailSender.send(message);
+	}
+
+	// Quên mật khẩu
+	@GetMapping("/forgot_password")
+	public String showForgotPasswordForm() {
+		return "/user/quenMK";
+	}
+
+	@PostMapping("/forgot_password")
+	public String processForgotPassword(HttpServletRequest request, Model model) {
+		String email = request.getParameter("email");
+		String token = RandomString.make(30);
+		System.out.println("Email" + email);
+		System.out.println("Token" + token);
+
+		try {
+			accountService.updateResetPasswordToken(token, email);
+			String resetPasswordLink = Utility.getSiteURL(request) + "/reset_password?token=" + token;
+			sendEmail(email, resetPasswordLink);
+			model.addAttribute("message",
+					"Chúng tôi đã gửi một liên kết đặt lại mật khẩu đến email của bạn. Hãy kiểm tra.");
+
+		} catch (CustomerNotFoundException ex) {
+			model.addAttribute("error", ex.getMessage());
+		} catch (UnsupportedEncodingException | MessagingException e) {
+			model.addAttribute("error", "Lỗi khi gửi email");
+		}
+
+		return "/user/quenMK";
+	}
+
+	public void sendEmail(String recipientEmail, String link) throws MessagingException, UnsupportedEncodingException {
+		MimeMessage message = mailSender.createMimeMessage();
+		MimeMessageHelper helper = new MimeMessageHelper(message,"UTF-8");
+		helper.setFrom("quocdvph14459@fpt.edu.vn", "itwatch Support");
+		helper.setTo(recipientEmail);
+
+		String subject = "Đây là liên kết để đặt lại mật khẩu của bạn";
+
+		String content = "<p>Xin chào!,</p>" + "<p>Bạn đã yêu cầu đặt lại mật khẩu của mình.</p>"
+				+ "<p>Nhấp vào liên kết bên dưới để thay đổi mật khẩu của bạn:</p>" + "<p><a href=\"" + link
+				+ "\">Thay đổi mật khẩu của bạn</a></p>" + "<br>"
+				+ "<p>Hãy bỏ qua email này nếu bạn nhớ mật khẩu của mình, "
+				+ "hoặc nếu bạn đã không thực hiện yêu cầu này.</p>";
+	
+		helper.setSubject(subject);
+
+		helper.setText(content, true);
+		mailSender.send(message);
+	}
+
+	@GetMapping("/reset_password")
+	public String showResetPasswordForm(@Param(value = "token") String token, Model model) {
+		Accounts accounts = accountService.getByResetPasswordToken(token);
+		model.addAttribute("token", token);
+
+		if (accounts == null) {
+			model.addAttribute("message", "Mã không hợp lệ");
+			return "user/reset_password_form";
+		}
+
+		return "user/reset_password_form";
+	}
+
+	@PostMapping("/reset_password")
+	public String processResetPassword(HttpServletRequest request, Model model) {
+		String token = request.getParameter("token");
+		String password = request.getParameter("password");
+
+		Accounts accounts = accountService.getByResetPasswordToken(token);
+//        model.addAttribute("title", "Reset your password");
+
+		if (accounts == null) {
+			model.addAttribute("message", "Mã không hợp lệ");
+			return "user/reset_password_form";
+		} else {
+			accountService.updatePassword(accounts, password);
+
+			model.addAttribute("message", "Bạn đã thay đổi thành công mật khẩu của bạn.");
+		}
+
+		return "user/reset_password_form";
+	}
+
+	// Đổi mật khẩu
+	@GetMapping("/change_password")
+	public String showChangePassword() {
+		return "/user/account/doiMatKhau";
+	}
+
+	@PostMapping("/change_password")
+	public String changePassword(@RequestParam("oldPassword") String oldPassword,
+			@RequestParam("password") String password, Principal principal, Model model, RedirectAttributes ra) {
+		BCryptPasswordEncoder bCryptPasswordEncoder = new BCryptPasswordEncoder();
+		String username = principal.getName();
+		Accounts currentUser = accountDao.findUserByUsername(username);
+
+		if (bCryptPasswordEncoder.matches(oldPassword, currentUser.getPassword())) {
+			// change
+			currentUser.setPassword(bCryptPasswordEncoder.encode(password));
+			accountService.save(currentUser);
+
+		} else {
+			// error
+			model.addAttribute("message", "Vui lòng điền đúng mật khẩu");
+			return "/user/account/doiMatKhau";
+		}
+		model.addAttribute("message", "Đổi mật khẩu thành công");
+		// ra.addFlashAttribute("message", "Đổi mật khẩu thành công");
+		// return "redirect:/auth/login/form";
+		return "/user/account/doiMatKhau";
+	}
+	
+	@RequestMapping(value = "/403", method = RequestMethod.GET)
+    public String accessDenied(Model model, Principal principal) {
+
+        return "/403Page";
+    }
+
+}
